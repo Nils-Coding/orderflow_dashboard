@@ -80,11 +80,14 @@ const API_URL =
   import.meta.env.PUBLIC_API_URL || "https://YOUR-CLOUD-RUN-URL/api/v1/candles";
 const API_KEY = import.meta.env.PUBLIC_API_KEY || "YOUR_API_KEY";
 
+let chart;
+let resizeObserver;
+
 onMounted(async () => {
   if (!chartContainer.value) return;
 
   // 1. Initialize Chart
-  const chart = createChart(chartContainer.value, {
+  chart = createChart(chartContainer.value, {
     layout: {
       background: { type: ColorType.Solid, color: "#1a1a1a" },
       textColor: "#d1d5db",
@@ -147,16 +150,22 @@ onMounted(async () => {
     loading.value = false;
   }
 
-  // Cleanup
-  const resizeObserver = new ResizeObserver(() => {
+  // Resize handling
+  resizeObserver = new ResizeObserver(() => {
     chart.applyOptions({ width: chartContainer.value.clientWidth });
   });
   resizeObserver.observe(chartContainer.value);
+});
 
-  onUnmounted(() => {
+onUnmounted(() => {
+  if (chart) {
     chart.remove();
+    chart = undefined;
+  }
+  if (resizeObserver) {
     resizeObserver.disconnect();
-  });
+    resizeObserver = undefined;
+  }
 });
 </script>
 
