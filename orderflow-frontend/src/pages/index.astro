@@ -1,0 +1,12 @@
+---
+import Layout from '../layouts/Layout.astro';
+import OrderflowChart from '../components/OrderflowChart.vue';
+---
+
+<Layout title="Orderflow Dashboard">
+  <main class="container mx-auto p-4 bg-gray-900 min-h-screen text-white">
+    <h1 class="text-3xl font-bold mb-6">Bitcoin Orderflow (Daily)</h1>
+    <!-- Client:only is crucial for Vue components using window/document -->
+    <OrderflowChart client:only="vue" />
+  </main>
+</Layout>

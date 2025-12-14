@@ -1,0 +1,15 @@
+---
+import '../styles/global.css';
+const { title = 'Orderflow Dashboard' } = Astro.props;
+---
+
+<html lang="en" class="bg-gray-900">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-screen bg-gray-900 text-white">
+    <slot />
+  </body>
+</html>
