@@ -1,0 +1,252 @@
+import os
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from tabulate import tabulate
+import matplotlib.pyplot as plt
+import io
+import base64
+import webbrowser
+
+# Load environment variables
+load_dotenv()
+
+API_KEY = os.getenv("ORDERFLOW_API_KEY")
+API_URL = os.getenv("ORDERFLOW_API_URL")
+
+# Configuration
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+START_DATE = "2025-12-11"
+END_DATE = "2025-12-13"
+
+def fetch_candle_data(symbol, date):
+    """
+    Fetches 1s candle data for a specific symbol and date.
+    """
+    if not API_KEY or not API_URL:
+        raise ValueError("API credentials not found in .env file (ORDERFLOW_API_KEY, ORDERFLOW_API_URL)")
+
+    # Handle potential trailing slash or pre-included endpoint in API_URL
+    base_url = API_URL.rstrip('/')
+    if base_url.endswith('/candles'):
+        url = base_url
+    else:
+        url = f"{base_url}/candles"
+    params = {
+        "symbol": symbol,
+        "date": date,
+        "resolution": "1s"  # Hardcoded to 1s
+    }
+    headers = {
+        "X-API-Key": API_KEY
+    }
+
+    try:
+        response = requests.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("data", [])
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching data for {symbol} on {date}: {e}")
+        return []
+
+def get_date_range(start, end):
+    """
+    Generates a list of dates between start and end (inclusive).
+    """
+    start_dt = datetime.strptime(start, "%Y-%m-%d")
+    end_dt = datetime.strptime(end, "%Y-%m-%d")
+    delta = end_dt - start_dt
+    
+    dates = []
+    for i in range(delta.days + 1):
+        day = start_dt + timedelta(days=i)
+        dates.append(day.strftime("%Y-%m-%d"))
+    return dates
+
+def process_data(symbol):
+    """
+    Fetches and processes 1s data for a symbol over the configured date range.
+    """
+    print(f"Processing {symbol} (1s resolution)...")
+    all_candles = []
+    dates = get_date_range(START_DATE, END_DATE)
+
+    for date in dates:
+        print(f"  Fetching {date}...")
+        candles = fetch_candle_data(symbol, date)
+        all_candles.extend(candles)
+
+    if not all_candles:
+        print(f"No data found for {symbol}.")
+        return None
+
+    df = pd.DataFrame(all_candles)
+    
+    # Convert time to datetime
+    df['datetime'] = pd.to_datetime(df['time'], unit='s')
+    df.set_index('datetime', inplace=True)
+    df.sort_index(inplace=True)
+
+    # Calculate Rolling Returns for 1s data
+    # 30 seconds
+    df['ret_30s'] = df['close'].pct_change(30)
+    # 1 minute = 60s
+    df['ret_1m'] = df['close'].pct_change(60)
+    # 2 minutes = 120s
+    df['ret_2m'] = df['close'].pct_change(120)
+    # 3 minutes = 180s
+    df['ret_3m'] = df['close'].pct_change(180)
+    # 4 minutes = 240s
+    df['ret_4m'] = df['close'].pct_change(240)
+    # 5 minutes = 300s
+    df['ret_5m'] = df['close'].pct_change(300)
+
+    return df
+
+def analyze_volatility(df, window_col):
+    """
+    Analyzes volatility events for a specific window return column.
+    """
+    # Filter for moves > 0.5% (0.005)
+    events = df[df[window_col].abs() >= 0.005].copy()
+    
+    if events.empty:
+        return []
+
+    # Bucketing
+    buckets = [
+        (0.005, 0.006, "0.5% - 0.6%"),
+        (0.006, 0.007, "0.6% - 0.7%"),
+        (0.007, 0.008, "0.7% - 0.8%"),
+        (0.008, 0.009, "0.8% - 0.9%"),
+        (0.009, 0.010, "0.9% - 1.0%"),
+        (0.010, 0.015, "1.0% - 1.5%"),
+        (0.015, 0.020, "1.5% - 2.0%"),
+        (0.020, float('inf'), "> 2.0%")
+    ]
+
+    results = []
+    for low, high, label in buckets:
+        # Pumps
+        pumps = events[(events[window_col] >= low) & (events[window_col] < high)]
+        # Dumps
+        dumps = events[(events[window_col] <= -low) & (events[window_col] > -high)]
+        
+        results.append({
+            "Bucket": label,
+            "Pumps": len(pumps),
+            "Dumps": len(dumps)
+        })
+
+    return results
+
+def generate_plot_base64(results, title):
+    """
+    Generates a bar chart from results and returns it as a base64 encoded string.
+    """
+    if not results:
+        return None
+
+    df_res = pd.DataFrame(results)
+    
+    # Plotting
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    x = range(len(df_res))
+    width = 0.35
+    
+    ax.bar([i - width/2 for i in x], df_res['Pumps'], width, label='Pumps', color='green')
+    ax.bar([i + width/2 for i in x], df_res['Dumps'], width, label='Dumps', color='red')
+    
+    ax.set_xlabel('Volatility Bucket')
+    ax.set_ylabel('Number of Events')
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(df_res['Bucket'], rotation=45, ha='right')
+    ax.legend()
+    
+    plt.tight_layout()
+    
+    # Save to buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    img_str = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close(fig)
+    
+    return img_str
+
+def main():
+    if not os.path.exists(".env"):
+        print("Warning: .env file not found. Ensure ORDERFLOW_API_KEY and ORDERFLOW_API_URL are set.")
+    
+    html_sections = []
+    
+    for symbol in SYMBOLS:
+        df = process_data(symbol)
+        if df is None:
+            continue
+            
+        print(f"\n{'='*40}")
+        print(f"REPORT: {symbol} (1s Resolution)")
+        print(f"{'='*40}")
+        
+        symbol_html = f"<h2>{symbol} (1s Resolution)</h2>"
+        
+        # Define windows to analyze
+        windows = [
+            ("30s", "ret_30s", "30 Second Window"),
+            ("1m", "ret_1m", "1 Minute Window"),
+            ("2m", "ret_2m", "2 Minute Window"),
+            ("3m", "ret_3m", "3 Minute Window"),
+            ("4m", "ret_4m", "4 Minute Window"),
+            ("5m", "ret_5m", "5 Minute Window")
+        ]
+        
+        for win_id, win_col, win_title in windows:
+            results = analyze_volatility(df, win_col)
+            print(f"\n--- {win_title} ---")
+            
+            if results:
+                print(tabulate(results, headers="keys", tablefmt="grid"))
+                plot = generate_plot_base64(results, f"{symbol} - {win_title}")
+                if plot:
+                    symbol_html += f"<h3>{win_title}</h3><img src='data:image/png;base64,{plot}'><br>"
+            else:
+                print("No events found.")
+                symbol_html += f"<h3>{win_title}</h3><p>No events found.</p>"
+            
+            symbol_html += "<hr>"
+            
+        html_sections.append(symbol_html)
+
+    # Generate full HTML
+    html_content = f"""
+    <html>
+    <head>
+        <title>Volatility Report (1s)</title>
+        <style>
+            body {{ font-family: sans-serif; padding: 20px; }}
+            img {{ max-width: 100%; border: 1px solid #ddd; margin-bottom: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        </style>
+    </head>
+    <body>
+        <h1>Volatility Analysis Report (1s High Resolution)</h1>
+        {"".join(html_sections)}
+    </body>
+    </html>
+    """
+    
+    with open("volatility_report_1s.html", "w") as f:
+        f.write(html_content)
+    
+    print("\nReport saved to volatility_report_1s.html. Opening in browser...")
+    webbrowser.open("file://" + os.path.abspath("volatility_report_1s.html"))
+
+if __name__ == "__main__":
+    main()
+
